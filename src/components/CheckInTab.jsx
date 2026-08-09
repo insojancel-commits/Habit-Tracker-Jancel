@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
-import { formatTime, nowHHMM, todayISO } from '../lib/dates'
+import { formatTime, nowHHMM, todayISO, localDateISO, localHHMM } from '../lib/dates'
 
 const TAG_META = {
   productive: { label: 'Productive', color: 'var(--productive)' },
@@ -85,7 +85,7 @@ export default function CheckInTab({ checkins, addCheckin, deleteCheckin, settin
     }
   }
 
-  const todaysCheckins = checkins.filter(c => c.logged_at.slice(0, 10) === todayISO())
+  const todaysCheckins = checkins.filter(c => localDateISO(c.logged_at) === todayISO())
   const tagTotals = todaysCheckins.reduce((acc, c) => {
     acc[c.tag] = (acc[c.tag] || 0) + 1
     return acc
@@ -118,7 +118,7 @@ export default function CheckInTab({ checkins, addCheckin, deleteCheckin, settin
           <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 500 }}>Check-in log</div>
           {lastEntry ? (
             <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 2 }}>
-              Last: <span className="mono">{formatTime(new Date(lastEntry.logged_at).toTimeString().slice(0,5))}</span> — {lastEntry.activity}
+              Last: <span className="mono">{formatTime(localHHMM(lastEntry.logged_at))}</span> — {lastEntry.activity}
             </div>
           ) : (
             <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 2 }}>No entries yet today</div>
@@ -170,7 +170,7 @@ export default function CheckInTab({ checkins, addCheckin, deleteCheckin, settin
                 padding: '9px 0', borderBottom: '1px solid var(--hairline-soft)'
               }}>
                 <span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)', width: 52, flexShrink: 0 }}>
-                  {new Date(c.logged_at).toTimeString().slice(0, 5)}
+                  {localHHMM(c.logged_at)}
                 </span>
                 <span style={{ width: 6, height: 6, borderRadius: '50%', background: TAG_META[c.tag]?.color || TAG_META.neutral.color, flexShrink: 0 }} />
                 <span style={{ fontSize: 14, flex: 1 }}>{c.activity}</span>
@@ -305,7 +305,7 @@ function PingSettings({ settings, updateSettings, onRequestPermission }) {
 function groupByDay(checkins) {
   const map = {}
   for (const c of checkins) {
-    const d = c.logged_at.slice(0, 10)
+    const d = localDateISO(c.logged_at)
     if (!map[d]) map[d] = []
     map[d].push(c)
   }
