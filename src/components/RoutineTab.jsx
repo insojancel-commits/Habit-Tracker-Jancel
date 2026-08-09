@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { todayISO, formatTime } from '../lib/dates'
+import { todayISO, formatTime, localDateISO } from '../lib/dates'
 import LedgerDots from './LedgerDots'
 import CategoryDot, { categoryColor, categoryLabel } from './CategoryDot'
 import HabitEditor from './HabitEditor'
@@ -20,7 +20,7 @@ export default function RoutineTab({ habits, isHabitDoneOn, streakFor, toggleHab
   // Mismatch: habit scheduled at a time, but check-in log around that time shows something unrelated
   const mismatches = useMemo(() => {
     const result = new Set()
-    const todaysCheckins = checkins.filter(c => c.logged_at.slice(0, 10) === today)
+    const todaysCheckins = checkins.filter(c => localDateISO(c.logged_at) === today)
     if (todaysCheckins.length === 0) return result
     for (const h of good) {
       if (!h.scheduled_time || isHabitDoneOn(h.id, today)) continue
