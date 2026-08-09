@@ -32,6 +32,25 @@ export function nowHHMM() {
   return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
 }
 
+// Converts a UTC timestamp string (e.g. from Supabase) into the LOCAL calendar
+// date/time it represents. Never slice a raw timestamp string directly —
+// that reads the UTC date, which drifts a day off in the evening for PH time (UTC+8).
+export function localDateFromTimestamp(isoTimestamp) {
+  return new Date(isoTimestamp)
+}
+
+export function localDateISO(isoTimestamp) {
+  const d = new Date(isoTimestamp)
+  const off = d.getTimezoneOffset()
+  const local = new Date(d.getTime() - off * 60000)
+  return local.toISOString().slice(0, 10)
+}
+
+export function localHHMM(isoTimestamp) {
+  const d = new Date(isoTimestamp)
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+}
+
 export function dayLabel(dateISO) {
   const today = todayISO()
   const yesterday = isoDaysAgo(1)
