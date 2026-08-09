@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { todayISO, isoDaysAgo, weekdayShort } from '../lib/dates'
+import { todayISO, isoDaysAgo, weekdayShort, localDateISO } from '../lib/dates'
 import { categoryColor, categoryLabel } from './CategoryDot'
 
 export default function InsightsTab({ habits, logs, checkins, isHabitDoneOn }) {
@@ -31,7 +31,7 @@ export default function InsightsTab({ habits, logs, checkins, isHabitDoneOn }) {
   // Check-in tag totals, last 7 days
   const tagTotals = useMemo(() => {
     const cutoff = isoDaysAgo(6)
-    const recent = checkins.filter(c => c.logged_at.slice(0, 10) >= cutoff)
+    const recent = checkins.filter(c => localDateISO(c.logged_at) >= cutoff)
     const totals = { productive: 0, neutral: 0, wasted: 0 }
     for (const c of recent) totals[c.tag] = (totals[c.tag] || 0) + 1
     const total = Object.values(totals).reduce((a, b) => a + b, 0) || 1
