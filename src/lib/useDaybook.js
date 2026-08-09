@@ -43,7 +43,8 @@ export function useDaybook() {
       const [habitsRes, logsRes, checkinsRes] = await Promise.all([
         supabase.from('habits').select('*').order('sort_order', { ascending: true }),
         supabase.from('habit_logs').select('*').gte('completed_date', isoDaysAgo(90)),
-        supabase.from('checkins').select('*').gte('logged_at', isoDaysAgo(14) + 'T00:00:00').order('logged_at', { ascending: false })
+        // Fetch a day extra on each side to absorb UTC/local boundary drift, then the UI filters precisely by local date.
+        supabase.from('checkins').select('*').gte('logged_at', isoDaysAgo(15) + 'T00:00:00Z').order('logged_at', { ascending: false })
       ])
       if (habitsRes.error) throw habitsRes.error
       if (logsRes.error) throw logsRes.error
