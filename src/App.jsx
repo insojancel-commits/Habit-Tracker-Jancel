@@ -1,98 +1,87 @@
-import { useState } from 'react'
-import { useDaybook } from './lib/useDaybook'
-import RoutineTab from './components/RoutineTab'
-import CheckInTab from './components/CheckInTab'
-import InsightsTab from './components/InsightsTab'
-
-const TABS = [
-  { key: 'routine', label: 'Routine' },
-  { key: 'checkin', label: 'Check-in' },
-  { key: 'insights', label: 'Insights' }
-]
+import React, { useMemo, useState } from 'react';
+import { useDaybookData } from './hooks/useDaybookData.js';
+import { todayLocal, greetingForHour } from './lib/dateHelpers.js';
+import Toast from './components/Toast.jsx';
+import CheckInTab from './components/CheckInTab.jsx';
+import RoutineTab from './components/RoutineTab.jsx';
+import InsightsTab from './components/InsightsTab.jsx';
 
 export default function App() {
-  const [tab, setTab] = useState('routine')
-  const db = useDaybook()
+  const [toast, setToast] = useState(null);
+  const [tab, setTab] = useState('checkin');
 
-  if (db.loading && db.habits.length === 0 && db.checkins.length === 0) {
-    return (
-      <div style={{ minHeight: '100dvh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-faint)' }}>
-        Loading your daybook…
-      </div>
-    )
+  const onError = (message) => setToast({ message, tone: 'error' });
+  const data = useDaybookData(null, onError);
+
+  const now = new Date();
+  const today = todayLocal();
+
+  const doneTodaySet = useMemo(
+    () => new Set(data.habitLogs.filter((l) => l.date === today && l.done).map((l) => l.habit_id)),
+    [data.habitLogs, today]
+  );
+  const essentialRemaining = useMemo(() => {
+    const essentials = data.habits.filter((h) => h.is_essential && !h.archived);
+    return essentials.length - essentials.filter((h) => doneTodaySet.has(h.id)).length;
+  }, [data.habits, doneTodaySet]);
+
+  function handleDeletedWithUndo(row) {
+    if (!row) return;
+    setToast({
+      message: 'Entry deleted.',
+      actionLabel: 'Undo',
+      onAction: () => data.restoreCheckin(row),
+    });
   }
 
-  if (db.error) {
-    return (
-      <div style={{ minHeight: '100dvh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', padding: 24, textAlign: 'center', gap: 12 }}>
-        <div style={{ fontFamily: 'var(--font-display)', fontSize: 18 }}>Couldn't reach the database</div>
-        <div style={{ color: 'var(--text-dim)', fontSize: 14 }}>{db.error}</div>
-        <button onClick={db.reload} style={{ padding: '10px 20px', borderRadius: 8, border: 'none', background: 'var(--amber)', color: '#1a1410', fontWeight: 600 }}>
-          Retry
-        </button>
-      </div>
-    )
-  }
+  if (data.loading) return <div className="db-root"><div className="db-loading-screen">Loading…</div></div>;
 
   return (
-    <div style={{ minHeight: '100dvh', maxWidth: 520, margin: '0 auto', position: 'relative' }}>
-      {tab === 'routine' && (
-        <RoutineTab
-          habits={db.habits}
-          isHabitDoneOn={db.isHabitDoneOn}
-          streakFor={db.streakFor}
-          toggleHabitDone={db.toggleHabitDone}
-          addHabit={db.addHabit}
-          updateHabit={db.updateHabit}
-          deleteHabit={db.deleteHabit}
-          checkins={db.checkins}
-        />
-      )}
-      {tab === 'checkin' && (
-        <CheckInTab
-          checkins={db.checkins}
-          addCheckin={db.addCheckin}
-          deleteCheckin={db.deleteCheckin}
-          settings={db.settings}
-          updateSettings={db.updateSettings}
-        />
-      )}
-      {tab === 'insights' && (
-        <InsightsTab
-          habits={db.habits}
-          logs={db.logs}
-          checkins={db.checkins}
-          isHabitDoneOn={db.isHabitDoneOn}
-        />
-      )}
+    <div className="db-root">
+      <div className="db-shell">
+        <div className="db-header">
+          <div className="db-title-row">
+            <div className="db-title">Daybook</div>
+          </div>
+          <div className="db-subtitle">{greetingForHour(now.getHours())} · {now.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}</div>
+        </div>
 
-      <nav style={navStyle}>
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            style={{
-              flex: 1, padding: '10px 0 8px', background: 'none', border: 'none',
-              color: tab === t.key ? 'var(--amber)' : 'var(--text-faint)',
-              fontSize: 12, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4
-            }}
-          >
-            <span style={{
-              width: tab === t.key ? 20 : 0, height: 2, background: 'var(--amber)',
-              borderRadius: 1, transition: 'width 0.15s'
-            }} />
-            {t.label}
+        <div className="db-tabbar">
+          <button className={`db-tab${tab === 'checkin' ? ' db-tab-active' : ''}`} onClick={() => setTab('checkin')}>Check-In</button>
+          <button className={`db-tab${tab === 'routine' ? ' db-tab-active' : ''}`} onClick={() => setTab('routine')}>
+            Routine{essentialRemaining > 0 && <span className="db-tab-badge">{essentialRemaining}</span>}
           </button>
-        ))}
-      </nav>
-    </div>
-  )
-}
+          <button className={`db-tab${tab === 'insights' ? ' db-tab-active' : ''}`} onClick={() => setTab('insights')}>Insights</button>
+        </div>
 
-const navStyle = {
-  position: 'fixed', bottom: 0, left: 0, right: 0,
-  maxWidth: 520, margin: '0 auto',
-  display: 'flex', background: 'var(--surface)',
-  borderTop: '1px solid var(--hairline)',
-  paddingBottom: 'env(safe-area-inset-bottom)'
+        <div className="db-tab-panel" key={tab}>
+          {tab === 'checkin' && (
+            <CheckInTab
+              checkins={data.checkins} habits={data.habits} habitLogs={data.habitLogs}
+              addCheckin={data.addCheckin} deleteCheckin={data.deleteCheckin} cycleTag={data.cycleTag}
+              toggleHabitDone={data.toggleHabitDone} ping={data.ping} setPing={data.setPing}
+              onDeletedWithUndo={handleDeletedWithUndo}
+            />
+          )}
+          {tab === 'routine' && (
+            <RoutineTab
+              habits={data.habits} habitLogs={data.habitLogs} checkins={data.checkins}
+              toggleHabitDone={data.toggleHabitDone} saveHabit={data.saveHabit} archiveHabit={data.archiveHabit}
+              restoreHabit={data.restoreHabit} deleteHabitForever={data.deleteHabitForever}
+              moveHabit={data.moveHabit} saveNote={data.saveNote}
+            />
+          )}
+          {tab === 'insights' && (
+            <InsightsTab
+              habits={data.habits} habitLogs={data.habitLogs} checkins={data.checkins}
+              backupState={{ habits: data.habits, habitLogs: data.habitLogs, checkins: data.checkins, ping: data.ping }}
+              onRestore={data.replaceAll}
+              onToast={setToast}
+            />
+          )}
+        </div>
+      </div>
+      <Toast toast={toast} onDismiss={() => setToast(null)} />
+    </div>
+  );
 }

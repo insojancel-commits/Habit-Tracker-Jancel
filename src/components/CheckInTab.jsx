@@ -1,327 +1,172 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
-import { formatTime, nowHHMM, todayISO, localDateISO, localHHMM } from '../lib/dates'
+import React, { useMemo, useState } from 'react';
+import {
+  todayLocal, localDateFromISO, formatLocalTime, formatDateHeader, formatRelative,
+  dayLabel, getTimeBlockForHour, hhmmToMinutes, isWithinWindow,
+} from '../lib/dateHelpers.js';
+import { TAGS, TAG_LABELS, TAG_VAR, PING_GAP_MINUTES } from '../lib/constants.js';
+import { CategoryDot, InlineDeleteButton, IconGear } from './ui.jsx';
 
-const TAG_META = {
-  productive: { label: 'Productive', color: 'var(--productive)' },
-  neutral: { label: 'Neutral', color: 'var(--neutral)' },
-  wasted: { label: 'Wasted', color: 'var(--wasted)' }
-}
+export default function CheckInTab({ checkins, habits, habitLogs, addCheckin, deleteCheckin, cycleTag, toggleHabitDone, ping, setPing, onDeletedWithUndo }) {
+  const [text, setText] = useState('');
+  const [tag, setTag] = useState('productive');
+  const [energy, setEnergy] = useState(0); // 0 = not set
+  const [showSettings, setShowSettings] = useState(false);
+  const today = todayLocal();
+  const now = new Date();
+  const currentBlock = getTimeBlockForHour(now.getHours());
 
-function withinWindow(nowHM, start, end) {
-  return nowHM >= start && nowHM <= end
-}
+  const activeHabits = useMemo(() => habits.filter((h) => !h.archived), [habits]);
 
-export default function CheckInTab({ checkins, addCheckin, deleteCheckin, settings, updateSettings }) {
-  const [customText, setCustomText] = useState('')
-  const [selectedTag, setSelectedTag] = useState('productive')
-  const [showPrompt, setShowPrompt] = useState(false)
-  const [showSettings, setShowSettings] = useState(false)
-  const audioCtxRef = useRef(null)
+  const doneTodaySet = useMemo(() => new Set(habitLogs.filter((l) => l.date === today && l.done).map((l) => l.habit_id)), [habitLogs, today]);
+  const routineChips = useMemo(
+    () => activeHabits.filter((h) => h.time_block === currentBlock && !h.is_bad_habit && !doneTodaySet.has(h.id)),
+    [activeHabits, currentBlock, doneTodaySet]
+  );
 
-  // Ranked chips: most-used activities at the current hour, from history
-  const rankedChips = useMemo(() => {
-    const hour = new Date().getHours()
-    const bucket = hour < 12 ? [5, 11] : hour < 17 ? [12, 16] : [17, 23]
-    const counts = {}
-    for (const c of checkins) {
-      const h = new Date(c.logged_at).getHours()
-      if (h >= bucket[0] && h <= bucket[1]) {
-        counts[c.activity] = (counts[c.activity] || 0) + 1
-      }
-    }
-    const fromHistory = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([name]) => name)
-    const merged = [...fromHistory, ...settings.quick_chips].filter((v, i, a) => a.indexOf(v) === i)
-    return merged.slice(0, 8)
-  }, [checkins, settings.quick_chips])
+  const frequentChips = useMemo(() => {
+    const counts = new Map();
+    checkins.forEach((c) => {
+      if (getTimeBlockForHour(new Date(c.logged_at).getHours()) !== currentBlock) return;
+      const key = c.activity.trim();
+      if (key) counts.set(key, (counts.get(key) || 0) + 1);
+    });
+    const routineNames = new Set(activeHabits.map((h) => h.name.toLowerCase()));
+    return [...counts.entries()]
+      .filter(([a]) => !routineNames.has(a.toLowerCase()))
+      .sort((a, b) => b[1] - a[1]).slice(0, 5).map(([a]) => a);
+  }, [checkins, currentBlock, activeHabits]);
 
-  const lastEntry = checkins[0]
+  const todaysCheckins = useMemo(() => checkins.filter((c) => localDateFromISO(c.logged_at) === today), [checkins, today]);
+  const tally = useMemo(() => {
+    const t = { productive: 0, wasted: 0, neutral: 0 };
+    todaysCheckins.forEach((c) => { t[c.tag] = (t[c.tag] || 0) + 1; });
+    return t;
+  }, [todaysCheckins]);
 
-  // Ping loop — only while tab open, only within window, only if enabled
-  useEffect(() => {
-    if (!settings.ping_enabled) return
-    const interval = setInterval(() => {
-      const nowHM = nowHHMM()
-      if (withinWindow(nowHM, settings.ping_start, settings.ping_end)) {
-        setShowPrompt(true)
-        playChime()
-        if (document.hidden && Notification?.permission === 'granted') {
-          try { new Notification('Daybook', { body: 'What are you doing right now?' }) } catch (e) {}
-        }
-      }
-    }, settings.ping_interval_min * 60 * 1000)
-    return () => clearInterval(interval)
-  }, [settings])
+  const lastCheckinMs = useMemo(() => (checkins.length === 0 ? null : Math.max(...checkins.map((c) => new Date(c.logged_at).getTime()))), [checkins]);
+  const minsSinceLast = lastCheckinMs ? (Date.now() - lastCheckinMs) / 60000 : Infinity;
+  const inPingWindow = ping.enabled && isWithinWindow(now.getHours() * 60 + now.getMinutes(), hhmmToMinutes(ping.start), hhmmToMinutes(ping.end));
+  const showPingBanner = inPingWindow && minsSinceLast >= PING_GAP_MINUTES;
 
-  function playChime() {
-    try {
-      if (!audioCtxRef.current) {
-        audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)()
-      }
-      const ctx = audioCtxRef.current
-      const osc = ctx.createOscillator()
-      const gain = ctx.createGain()
-      osc.type = 'sine'
-      osc.frequency.value = 660
-      gain.gain.setValueAtTime(0.0001, ctx.currentTime)
-      gain.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.02)
-      gain.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.5)
-      osc.connect(gain)
-      gain.connect(ctx.destination)
-      osc.start()
-      osc.stop(ctx.currentTime + 0.5)
-    } catch (e) {}
+  const grouped = useMemo(() => {
+    const byDay = new Map();
+    checkins.forEach((c) => {
+      const day = localDateFromISO(c.logged_at);
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day).push(c);
+    });
+    return [...byDay.keys()].sort((a, b) => (a < b ? 1 : -1)).map((day) => ({
+      day, entries: byDay.get(day).sort((a, b) => (a.logged_at < b.logged_at ? 1 : -1)),
+    }));
+  }, [checkins]);
+
+  function submit() {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    addCheckin(trimmed, tag, energy || null);
+    setText('');
+    setEnergy(0);
   }
-
-  async function handleLog(activity, tag) {
-    if (!activity.trim()) return
-    await addCheckin(activity.trim(), tag)
-    setCustomText('')
-    setShowPrompt(false)
+  function logRoutineChip(h) {
+    addCheckin(h.name, 'productive', null);
+    toggleHabitDone(h.id, today);
   }
-
-  async function requestNotifPermission() {
-    if (typeof Notification !== 'undefined' && Notification.permission === 'default') {
-      await Notification.requestPermission()
-    }
+  async function handleDelete(id) {
+    const row = await deleteCheckin(id);
+    onDeletedWithUndo(row);
   }
-
-  const todaysCheckins = checkins.filter(c => localDateISO(c.logged_at) === todayISO())
-  const tagTotals = todaysCheckins.reduce((acc, c) => {
-    acc[c.tag] = (acc[c.tag] || 0) + 1
-    return acc
-  }, {})
 
   return (
-    <div style={{ paddingBottom: 100 }}>
-      {/* Ping prompt banner */}
-      {showPrompt && (
-        <div style={{
-          margin: '16px 16px 0',
-          padding: '18px 16px',
-          background: 'var(--surface-raised)',
-          border: '1px solid var(--amber)',
-          borderRadius: 'var(--radius)'
-        }}>
-          <div style={{ fontFamily: 'var(--font-display)', fontSize: 17, marginBottom: 12 }}>
-            What are you doing right now?
-          </div>
-          <QuickChipRow chips={rankedChips} onPick={(a) => handleLog(a, selectedTag)} />
-          <TagPicker selected={selectedTag} onSelect={setSelectedTag} />
-          <CustomInput value={customText} onChange={setCustomText} onSubmit={() => handleLog(customText, selectedTag)} />
-          <button onClick={() => setShowPrompt(false)} style={dismissBtnStyle}>Dismiss</button>
-        </div>
+    <div>
+      {showPingBanner && (
+        <div className="db-ping-banner">Quiet stretch — {formatRelative(Date.now() - lastCheckinMs)} since your last entry. What are you up to?</div>
       )}
 
-      {/* Header */}
-      <div style={{ padding: '20px 16px 8px', display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
-        <div>
-          <div style={{ fontFamily: 'var(--font-display)', fontSize: 22, fontWeight: 500 }}>Check-in log</div>
-          {lastEntry ? (
-            <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 2 }}>
-              Last: <span className="mono">{formatTime(localHHMM(lastEntry.logged_at))}</span> — {lastEntry.activity}
-            </div>
-          ) : (
-            <div style={{ fontSize: 13, color: 'var(--text-dim)', marginTop: 2 }}>No entries yet today</div>
-          )}
+      <div className="db-card">
+        <div className="db-card-head">
+          <div className="db-eyebrow" style={{ marginBottom: 0 }}>What are you doing right now?</div>
+          <button className="db-icon-btn" onClick={() => setShowSettings((s) => !s)} aria-label="Nudge settings"><IconGear /></button>
         </div>
-        <button onClick={() => setShowSettings(s => !s)} style={iconBtnStyle}>⚙</button>
-      </div>
 
-      {showSettings && (
-        <PingSettings settings={settings} updateSettings={updateSettings} onRequestPermission={requestNotifPermission} />
-      )}
-
-      {/* Manual log entry, always available */}
-      {!showPrompt && (
-        <div style={{ margin: '4px 16px 20px', padding: 14, background: 'var(--surface)', borderRadius: 'var(--radius)', border: '1px solid var(--hairline-soft)' }}>
-          <QuickChipRow chips={rankedChips} onPick={(a) => handleLog(a, selectedTag)} />
-          <TagPicker selected={selectedTag} onSelect={setSelectedTag} />
-          <CustomInput value={customText} onChange={setCustomText} onSubmit={() => handleLog(customText, selectedTag)} />
-        </div>
-      )}
-
-      {/* Today's tally */}
-      {todaysCheckins.length > 0 && (
-        <div style={{ display: 'flex', gap: 14, padding: '0 16px 16px', fontSize: 12 }}>
-          {Object.entries(TAG_META).map(([key, meta]) => (
-            <div key={key} style={{ display: 'flex', alignItems: 'center', gap: 5, color: 'var(--text-dim)' }}>
-              <span style={{ width: 6, height: 6, borderRadius: '50%', background: meta.color }} />
-              {tagTotals[key] || 0} {meta.label.toLowerCase()}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Timeline */}
-      <div style={{ padding: '0 16px' }}>
-        {checkins.length === 0 && (
-          <div style={{ color: 'var(--text-faint)', fontSize: 14, padding: '20px 0', textAlign: 'center' }}>
-            Nothing logged yet. Tap an activity above to start your day's record.
+        {showSettings && (
+          <div className="db-ping-settings">
+            <label className="db-toggle-label">
+              <input type="checkbox" checked={ping.enabled} onChange={(e) => setPing({ ...ping, enabled: e.target.checked })} />
+              Nudge me to log during a window
+            </label>
+            {ping.enabled && (
+              <div className="db-ping-times">
+                <input className="db-input db-input-time" type="time" aria-label="Nudge window start" value={ping.start} onChange={(e) => setPing({ ...ping, start: e.target.value })} />
+                <span className="db-ping-to">to</span>
+                <input className="db-input db-input-time" type="time" aria-label="Nudge window end" value={ping.end} onChange={(e) => setPing({ ...ping, end: e.target.value })} />
+              </div>
+            )}
           </div>
         )}
-        {groupByDay(checkins).map(([dateISO, entries]) => (
-          <div key={dateISO} style={{ marginBottom: 22 }}>
-            <div style={{ fontSize: 11, letterSpacing: 0.5, textTransform: 'uppercase', color: 'var(--text-faint)', marginBottom: 8 }}>
-              {dateISO === todayISO() ? 'Today' : new Date(dateISO + 'T00:00:00').toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}
+
+        <input className="db-input" value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') submit(); }} placeholder="Type an activity…" />
+
+        {routineChips.length > 0 && (
+          <div className="db-chip-section">
+            <div className="db-chip-section-label">Quick-log from routine — marks it done too</div>
+            <div className="db-chip-row">
+              {routineChips.map((h) => (
+                <button key={h.id} className="db-chip db-chip-routine" onClick={() => logRoutineChip(h)}>
+                  <CategoryDot category={h.category} size={6} /> {h.name}
+                </button>
+              ))}
             </div>
-            {entries.map(c => (
-              <div key={c.id} style={{
-                display: 'flex', alignItems: 'center', gap: 10,
-                padding: '9px 0', borderBottom: '1px solid var(--hairline-soft)'
-              }}>
-                <span className="mono" style={{ fontSize: 12, color: 'var(--text-faint)', width: 52, flexShrink: 0 }}>
-                  {localHHMM(c.logged_at)}
-                </span>
-                <span style={{ width: 6, height: 6, borderRadius: '50%', background: TAG_META[c.tag]?.color || TAG_META.neutral.color, flexShrink: 0 }} />
-                <span style={{ fontSize: 14, flex: 1 }}>{c.activity}</span>
-                <button onClick={() => deleteCheckin(c.id)} style={{ background: 'none', border: 'none', color: 'var(--text-faint)', fontSize: 16, padding: 4 }}>×</button>
+          </div>
+        )}
+        {frequentChips.length > 0 && (
+          <div className="db-chip-section">
+            <div className="db-chip-section-label">Frequent</div>
+            <div className="db-chip-row">{frequentChips.map((c) => (<button key={c} className="db-chip" onClick={() => setText(c)}>{c}</button>))}</div>
+          </div>
+        )}
+
+        <div className="db-tag-row">
+          {TAGS.map((t) => (
+            <button key={t} onClick={() => setTag(t)} className={`db-tag-btn${tag === t ? ' db-tag-btn-active' : ''}`} style={tag === t ? { borderColor: `var(${TAG_VAR[t]})`, color: `var(${TAG_VAR[t]})` } : undefined}>
+              <span className="db-tag-dot" style={{ background: `var(${TAG_VAR[t]})` }} />{TAG_LABELS[t]}
+            </button>
+          ))}
+        </div>
+
+        <div className="db-energy-row">
+          <span className="db-energy-label">Energy</span>
+          {[1, 2, 3, 4, 5].map((n) => (
+            <button key={n} className={`db-energy-dot${energy >= n ? ' db-energy-dot-active' : ''}`} onClick={() => setEnergy(energy === n ? 0 : n)} aria-label={`Energy ${n} of 5`} />
+          ))}
+          {energy > 0 && <span className="db-energy-value">{energy}/5</span>}
+        </div>
+
+        <button className="db-btn db-btn-primary db-log-btn" onClick={submit}>Log it</button>
+      </div>
+
+      <div className="db-tally-row">
+        {TAGS.map((t) => (
+          <div key={t} className="db-tally-card"><div className="db-tally-num" style={{ color: `var(${TAG_VAR[t]})` }}>{tally[t] || 0}</div><div className="db-tally-label">{TAG_LABELS[t]}</div></div>
+        ))}
+      </div>
+      {lastCheckinMs && <div className="db-meta-line">Last logged {formatRelative(Date.now() - lastCheckinMs)} · tap a colored dot below to re-tag an entry</div>}
+
+      <div className="db-timeline">
+        {grouped.length === 0 && <div className="db-empty">Nothing logged yet — the first entry starts today's page.</div>}
+        {grouped.map(({ day, entries }) => (
+          <div key={day} className="db-timeline-day">
+            <div className="db-timeline-day-header"><span>{dayLabel(day, today)}</span><span className="db-timeline-day-date">{formatDateHeader(day)}</span></div>
+            {entries.map((c) => (
+              <div key={c.id} className="db-entry">
+                <span className="db-entry-time">{formatLocalTime(c.logged_at)}</span>
+                <button className="db-tag-dot-btn" style={{ background: `var(${TAG_VAR[c.tag]})` }} onClick={() => cycleTag(c.id)} aria-label={`Tag: ${c.tag}. Tap to change`} title="Tap to change tag" />
+                <span className="db-entry-text">{c.activity}{c.energy ? <span className="db-entry-energy"> · energy {c.energy}/5</span> : null}</span>
+                <InlineDeleteButton onConfirm={() => handleDelete(c.id)} label="Delete entry" />
               </div>
             ))}
           </div>
         ))}
       </div>
     </div>
-  )
-}
-
-function QuickChipRow({ chips, onPick }) {
-  return (
-    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 7, marginBottom: 10 }}>
-      {chips.map(chip => (
-        <button
-          key={chip}
-          onClick={() => onPick(chip)}
-          style={{
-            padding: '7px 12px',
-            borderRadius: 20,
-            border: '1px solid var(--hairline)',
-            background: 'var(--surface-raised)',
-            color: 'var(--text)',
-            fontSize: 13
-          }}
-        >
-          {chip}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function TagPicker({ selected, onSelect }) {
-  return (
-    <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-      {Object.entries(TAG_META).map(([key, meta]) => (
-        <button
-          key={key}
-          onClick={() => onSelect(key)}
-          style={{
-            flex: 1,
-            padding: '6px 0',
-            borderRadius: 'var(--radius-sm)',
-            border: `1px solid ${selected === key ? meta.color : 'var(--hairline)'}`,
-            background: selected === key ? meta.color + '22' : 'transparent',
-            color: selected === key ? meta.color : 'var(--text-dim)',
-            fontSize: 12,
-            fontWeight: 500
-          }}
-        >
-          {meta.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function CustomInput({ value, onChange, onSubmit }) {
-  return (
-    <form onSubmit={(e) => { e.preventDefault(); onSubmit() }} style={{ display: 'flex', gap: 8 }}>
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder="Or type what you're doing…"
-        style={{
-          flex: 1,
-          padding: '9px 12px',
-          borderRadius: 'var(--radius-sm)',
-          border: '1px solid var(--hairline)',
-          background: 'var(--ink)',
-          color: 'var(--text)',
-          fontSize: 14
-        }}
-      />
-      <button type="submit" style={{
-        padding: '9px 16px', borderRadius: 'var(--radius-sm)', border: 'none',
-        background: 'var(--amber)', color: '#1a1410', fontWeight: 600, fontSize: 14
-      }}>
-        Log
-      </button>
-    </form>
-  )
-}
-
-function PingSettings({ settings, updateSettings, onRequestPermission }) {
-  return (
-    <div style={{ margin: '0 16px 16px', padding: 14, background: 'var(--surface)', border: '1px solid var(--hairline-soft)', borderRadius: 'var(--radius)' }}>
-      <label style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 14, marginBottom: 12 }}>
-        Ping me every {settings.ping_interval_min} min
-        <input
-          type="checkbox"
-          checked={settings.ping_enabled}
-          onChange={(e) => {
-            updateSettings({ ping_enabled: e.target.checked })
-            if (e.target.checked) onRequestPermission()
-          }}
-        />
-      </label>
-      <div style={{ display: 'flex', gap: 10, marginBottom: 10 }}>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 4 }}>FROM</div>
-          <input type="time" value={settings.ping_start} onChange={(e) => updateSettings({ ping_start: e.target.value })} style={timeInputStyle} />
-        </div>
-        <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 4 }}>TO</div>
-          <input type="time" value={settings.ping_end} onChange={(e) => updateSettings({ ping_end: e.target.value })} style={timeInputStyle} />
-        </div>
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--text-faint)', marginBottom: 4 }}>INTERVAL (MIN)</div>
-      <div style={{ display: 'flex', gap: 6 }}>
-        {[15, 30, 60].map(m => (
-          <button key={m} onClick={() => updateSettings({ ping_interval_min: m })} style={{
-            flex: 1, padding: '6px 0', borderRadius: 'var(--radius-sm)',
-            border: `1px solid ${settings.ping_interval_min === m ? 'var(--amber)' : 'var(--hairline)'}`,
-            background: settings.ping_interval_min === m ? 'var(--amber-soft)' : 'transparent',
-            color: settings.ping_interval_min === m ? 'var(--amber)' : 'var(--text-dim)',
-            fontSize: 12
-          }}>{m}</button>
-        ))}
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--text-faint)', marginTop: 12, lineHeight: 1.5 }}>
-        Pings only fire while this tab is open. For background alerts, add Daybook to your home screen.
-      </div>
-    </div>
-  )
-}
-
-function groupByDay(checkins) {
-  const map = {}
-  for (const c of checkins) {
-    const d = localDateISO(c.logged_at)
-    if (!map[d]) map[d] = []
-    map[d].push(c)
-  }
-  return Object.entries(map).sort((a, b) => b[0].localeCompare(a[0]))
-}
-
-const dismissBtnStyle = {
-  marginTop: 10, background: 'none', border: 'none', color: 'var(--text-faint)', fontSize: 13, padding: 0
-}
-
-const iconBtnStyle = {
-  background: 'var(--surface-raised)', border: '1px solid var(--hairline)', borderRadius: '50%',
-  width: 34, height: 34, color: 'var(--text-dim)', fontSize: 15
-}
-
-const timeInputStyle = {
-  width: '100%', padding: '7px 8px', borderRadius: 'var(--radius-sm)',
-  border: '1px solid var(--hairline)', background: 'var(--ink)', color: 'var(--text)', fontSize: 13
+  );
 }
